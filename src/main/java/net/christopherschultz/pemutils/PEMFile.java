@@ -31,9 +31,11 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.security.cert.CRLException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
+import java.security.cert.X509CRL;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.DSAPrivateKey;
 import java.security.interfaces.DSAPublicKey;
@@ -86,6 +88,7 @@ import javax.crypto.spec.SecretKeySpec;
 -----BEGIN EC PRIVATE KEY-----
 -----BEGIN EC PARAMETERS-----
 -----BEGIN PUBLIC KEY-----
+-----BEGIN X509 CRL-----
 </pre>
  *
  * A special thanks to many unspecified askers and answerers on StackOverflow
@@ -232,6 +235,7 @@ public class PEMFile {
         private static final String RSA_PRIVATE_KEY="RSA PRIVATE KEY";
         private static final String PUBLIC_KEY="PUBLIC KEY";
         private static final String CERTIFICATE="CERTIFICATE";
+        private static final String X509_CRL="X509 CRL";
 
         /**
          * Decodes a PEM entry given its header and body.
@@ -252,7 +256,7 @@ public class PEMFile {
          * @throws CertificateException
          */
         public static Entry decode(String header, String body, PasswordProvider passwordProvider)
-            throws IOException, NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeySpecException, InvalidKeyException, InvalidAlgorithmParameterException, IllegalBlockSizeException, BadPaddingException, CertificateException
+            throws IOException, NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeySpecException, InvalidKeyException, InvalidAlgorithmParameterException, IllegalBlockSizeException, BadPaddingException, CertificateException, CRLException
         {
             // TODO: DSA? Tests say it's covered. Where is BEGIN DSA PRIVATE KEY???
             if(PRIVATE_KEY.equals(header) || ENCRYPTED_PRIVATE_KEY.equals(header)) {
@@ -273,6 +277,9 @@ public class PEMFile {
                 return decodePublicKey(header, body);
             } else if(EC_PARAMETERS.equals(header)) {
                 return decodeECParameters(header, body);
+
+            } else if(X509_CRL.equals(header)) {
+                return decodeX509CRL(header, body);
             } else {
                 return new UnknownEntry(header, body);
             }
@@ -977,6 +984,55 @@ public class PEMFile {
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
 
         return new CertificateEntry(header, body, cf.generateCertificate(new ByteArrayInputStream(Base64.getMimeDecoder().decode(body))));
+    }
+
+    /**
+     * An Entry subclass for Certificates (most likely X.509).
+     */
+    public static class X509CRLEntry extends Entry {
+        private final X509CRL crl;
+
+        public X509CRLEntry(String header, String body, X509CRL crl) {
+            super(header, body);
+
+            this.crl = crl;
+        }
+
+        public X509CRL getCRL() {
+            return crl;
+        }
+
+        public String toString() {
+            StringBuilder sb = new StringBuilder();
+
+            sb.append("CRL: type=")
+            .append(crl.getType())
+            .append(", issuer=").append(crl.getIssuerDN())
+            ;
+
+            return sb.toString();
+        }
+
+        /**
+         * Writes the certificate as a PKCS#8 PEM-encoded DER file.
+         *
+         * @param w The Writer where the PEM entry should be written.
+         */
+        @Override
+        public void write(Writer w) throws IOException, GeneralSecurityException {
+            w.append("-----BEGIN X509 CRL-----\n")
+            .append(java.util.Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII)).encodeToString(crl.getEncoded()))
+            .append("\n-----END X509 CRL-----\n")
+            ;
+        }
+    }
+
+    private static X509CRLEntry decodeX509CRL(String header, String body)
+        throws IOException, CertificateException, CRLException
+    {
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+
+        return new X509CRLEntry(header, body, (X509CRL)cf.generateCRL(new ByteArrayInputStream(Base64.getMimeDecoder().decode(body))));
     }
 
     public static final String RSA_OID = "1.2.840.113549.1.1.1";
