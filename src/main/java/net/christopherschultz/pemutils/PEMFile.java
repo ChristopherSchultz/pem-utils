@@ -102,6 +102,11 @@ import javax.crypto.spec.SecretKeySpec;
  */
 public class PEMFile {
     /**
+     * Some behaviors must change based upon Java version.
+     */
+    private static final double JAVA_VERSION = Double.parseDouble(System.getProperty("java.specification.version"));
+
+    /**
      * Dumps the entries in a PEM file found on standard input.
      *
      * @param args Ignored
@@ -793,7 +798,7 @@ public class PEMFile {
                     tag = a1s.nextTag();
                 }
 
-                // NOTE: Java doesn't seem to like X25519 keys as generated
+                // NOTE: Java 11 doesn't seem to like X25519 keys as generated
                 // by OpenSSL. You get an error that the key isn't 32-bits.
                 // This is because the keys are double-wrapped in an
                 // OCTET STRING, which is a little odd but correct.
@@ -805,20 +810,25 @@ public class PEMFile {
                 // The same is true for X448 keys, where the length should be
                 // 56 but it's 58 instead
                 //
-                if(ASN1Stream.Tag.OCTET_STRING.equals(tag)
-                        && 34 == (len = a1s.nextLength())
-                        && 34 == a1s.skip(len)) {
-                    // Move the key
-                    System.arraycopy(keydata, keydata.length - 32, keydata, keydata.length - 34, 32);
-                    // Change the length
-                    keydata[keydata.length - 35] = 32;
-                } else if(ASN1Stream.Tag.OCTET_STRING.equals(tag)
-                        && 58 == len
-                        && 58 == a1s.skip(len)) {
-                    // Move the key
-                    System.arraycopy(keydata, keydata.length - 56, keydata, keydata.length - 58, 56);
-                    // Change the length
-                    keydata[keydata.length - 59] = 56;
+                // "Fixing" this bug in Java 15 and later causes errors, so
+                // this fix-up code must be Java-version-specific.
+                //
+                if(JAVA_VERSION >= 11 && JAVA_VERSION < 15) {
+                    if(ASN1Stream.Tag.OCTET_STRING.equals(tag)
+                            && 34 == (len = a1s.nextLength())
+                            && 34 == a1s.skip(len)) {
+                        // Move the key
+                        System.arraycopy(keydata, keydata.length - 32, keydata, keydata.length - 34, 32);
+                        // Change the length
+                        keydata[keydata.length - 35] = 32;
+                    } else if(ASN1Stream.Tag.OCTET_STRING.equals(tag)
+                            && 58 == len
+                            && 58 == a1s.skip(len)) {
+                        // Move the key
+                        System.arraycopy(keydata, keydata.length - 56, keydata, keydata.length - 58, 56);
+                        // Change the length
+                        keydata[keydata.length - 59] = 56;
+                    }
                 }
                 KeySpec keySpec = new PKCS8EncodedKeySpec(keydata);
 
