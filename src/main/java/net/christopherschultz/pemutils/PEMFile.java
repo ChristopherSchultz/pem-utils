@@ -400,9 +400,20 @@ public class PEMFile {
                 }
 
                 String encryptionAlgorithm = encryptionDetails.substring(0, pos); // e.g. DES-EDE3-CBC
-
+                String keyAlgorithm;
+                int keyLength;
                 if("DES-EDE3-CBC".equals(encryptionAlgorithm)) {
                     encryptionAlgorithm = "DESede/CBC/PKCS5Padding";
+                    keyLength = 24;
+                    keyAlgorithm = "DESede";
+                } else if("DES-CBC".equals(encryptionAlgorithm)) {
+                    encryptionAlgorithm = "DES/CBC/PKCS5Padding";
+                    keyLength = 8;
+                    keyAlgorithm = "DES";
+                } else if("AES-256-CBC".equals(encryptionAlgorithm)) {
+                    encryptionAlgorithm = "AES/CBC/PKCS5Padding";
+                    keyLength = 32;
+                    keyAlgorithm = "AES";
                 } else {
                     throw new IllegalArgumentException("Unrecognized key encryption algorithm: " + encryptionAlgorithm);
                 }
@@ -426,8 +437,7 @@ public class PEMFile {
 
                     try {
                         c.init(Cipher.DECRYPT_MODE,
-                                // TODO: Set password (callback?)
-                                getOpenSSLSecretKey(password.getBytes("ASCII"), iv),
+                                getPBKDF1SecretKey(keyAlgorithm, keyLength, password.getBytes(StandardCharsets.UTF_8), iv),
                                 new IvParameterSpec(iv));
 
                         // Unwrap
@@ -503,21 +513,29 @@ public class PEMFile {
          *
          * @throws NoSuchAlgorithmException If the JVM doesn't support DESede.
          */
-        private static SecretKey getOpenSSLSecretKey(byte[] pw, byte[] iv)
+        private static SecretKey getPBKDF1SecretKey(String keyAlgorithm, int keyLength, byte[] pw, byte[] iv)
             throws NoSuchAlgorithmException
         {
+            // https://datatracker.ietf.org/doc/html/rfc2898#section-6.1.2
+            //
+            // Notes:
+            // The salt is always 8 bytes
+            byte[] key = new byte[keyLength];
+
             MessageDigest md5 = MessageDigest.getInstance("MD5");
             md5.update(pw);
             md5.update(iv);
             byte[] d0 = md5.digest();
-            md5.update(d0);
-            md5.update(pw);
-            md5.update(iv);
-            byte[] d1 = md5.digest();
-            byte[] key = new byte[24];
-            System.arraycopy(d0, 0, key, 0, 16);
-            System.arraycopy(d1, 0, key, 16, 8);
-            return new SecretKeySpec(key, "DESede");
+            System.arraycopy(d0, 0, key, 0, Math.min(16, keyLength));
+            if(keyLength > 16) {
+                md5.update(d0);
+                md5.update(pw);
+                md5.update(iv);
+                byte[] d1 = md5.digest();
+                System.arraycopy(d1, 0, key, 16, Math.min(keyLength - 16, 16));
+            }
+
+            return new SecretKeySpec(key, keyAlgorithm);
         }
 
         /**
@@ -766,6 +784,15 @@ public class PEMFile {
 
                 KeyFactory kf = KeyFactory.getInstance(algorithm);
 
+                ASN1Stream.Tag tag = a1s.nextTag();
+                long len=0;
+
+                if(ASN1Stream.Tag.NULL.equals(tag)) {
+                    // This NULL appears to be optional. Skip it if we find one.
+                    a1s.nextLength(); // ignore, will be 00
+                    tag = a1s.nextTag();
+                }
+
                 // NOTE: Java doesn't seem to like X25519 keys as generated
                 // by OpenSSL. You get an error that the key isn't 32-bits.
                 // This is because the keys are double-wrapped in an
@@ -778,15 +805,6 @@ public class PEMFile {
                 // The same is true for X448 keys, where the length should be
                 // 56 but it's 58 instead
                 //
-                ASN1Stream.Tag tag = a1s.nextTag();
-                long len=0;
-
-                if(ASN1Stream.Tag.NULL.equals(tag)) {
-                    // This NULL appears to be optional. Skip is if we find one.
-                    a1s.nextLength(); // ignore, will be 00
-                    tag = a1s.nextTag();
-                }
-
                 if(ASN1Stream.Tag.OCTET_STRING.equals(tag)
                         && 34 == (len = a1s.nextLength())
                         && 34 == a1s.skip(len)) {
@@ -802,7 +820,6 @@ public class PEMFile {
                     // Change the length
                     keydata[keydata.length - 59] = 56;
                 }
-
                 KeySpec keySpec = new PKCS8EncodedKeySpec(keydata);
 
                 key = kf.generatePrivate(keySpec);
